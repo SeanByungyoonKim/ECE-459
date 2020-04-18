@@ -1,0 +1,1233 @@
+<?xml version="1.0" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg version="1.1" width="6000" height="374" onload="init(evt)" viewBox="0 0 6000 374" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<!-- Flame graph stack visualization. See https://github.com/brendangregg/FlameGraph for latest version, and http://www.brendangregg.com/flamegraphs.html for examples. -->
+<!-- NOTES:  -->
+<defs>
+	<linearGradient id="background" y1="0" y2="1" x1="0" x2="0" >
+		<stop stop-color="#eeeeee" offset="5%" />
+		<stop stop-color="#eeeeb0" offset="95%" />
+	</linearGradient>
+</defs>
+<style type="text/css">
+	text { font-family:Verdana; font-size:12px; fill:rgb(0,0,0); }
+	#search { opacity:0.1; cursor:pointer; }
+	#search:hover, #search.show { opacity:1; }
+	#subtitle { text-anchor:middle; font-color:rgb(160,160,160); }
+	#title { text-anchor:middle; font-size:17px}
+	#unzoom { cursor:pointer; }
+	#frames > *:hover { stroke:black; stroke-width:0.5; cursor:pointer; }
+	.hide { display:none; }
+	.parent { opacity:0.5; }
+</style>
+<script type="text/ecmascript">
+<![CDATA[
+	"use strict";
+	var details, searchbtn, unzoombtn, matchedtxt, svg, searching;
+	function init(evt) {
+		details = document.getElementById("details").firstChild;
+		searchbtn = document.getElementById("search");
+		unzoombtn = document.getElementById("unzoom");
+		matchedtxt = document.getElementById("matched");
+		svg = document.getElementsByTagName("svg")[0];
+		searching = 0;
+	}
+
+	window.addEventListener("click", function(e) {
+		var target = find_group(e.target);
+		if (target) {
+			if (target.nodeName == "a") {
+				if (e.ctrlKey === false) return;
+				e.preventDefault();
+			}
+			if (target.classList.contains("parent")) unzoom();
+			zoom(target);
+		}
+		else if (e.target.id == "unzoom") unzoom();
+		else if (e.target.id == "search") search_prompt();
+	}, false)
+
+	// mouse-over for info
+	// show
+	window.addEventListener("mouseover", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = "Function: " + g_to_text(target);
+	}, false)
+
+	// clear
+	window.addEventListener("mouseout", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = ' ';
+	}, false)
+
+	// ctrl-F for search
+	window.addEventListener("keydown",function (e) {
+		if (e.keyCode === 114 || (e.ctrlKey && e.keyCode === 70)) {
+			e.preventDefault();
+			search_prompt();
+		}
+	}, false)
+
+	// functions
+	function find_child(node, selector) {
+		var children = node.querySelectorAll(selector);
+		if (children.length) return children[0];
+		return;
+	}
+	function find_group(node) {
+		var parent = node.parentElement;
+		if (!parent) return;
+		if (parent.id == "frames") return node;
+		return find_group(parent);
+	}
+	function orig_save(e, attr, val) {
+		if (e.attributes["_orig_" + attr] != undefined) return;
+		if (e.attributes[attr] == undefined) return;
+		if (val == undefined) val = e.attributes[attr].value;
+		e.setAttribute("_orig_" + attr, val);
+	}
+	function orig_load(e, attr) {
+		if (e.attributes["_orig_"+attr] == undefined) return;
+		e.attributes[attr].value = e.attributes["_orig_" + attr].value;
+		e.removeAttribute("_orig_"+attr);
+	}
+	function g_to_text(e) {
+		var text = find_child(e, "title").firstChild.nodeValue;
+		return (text)
+	}
+	function g_to_func(e) {
+		var func = g_to_text(e);
+		// if there's any manipulation we want to do to the function
+		// name before it's searched, do it here before returning.
+		return (func);
+	}
+	function update_text(e) {
+		var r = find_child(e, "rect");
+		var t = find_child(e, "text");
+		var w = parseFloat(r.attributes.width.value) -3;
+		var txt = find_child(e, "title").textContent.replace(/\([^(]*\)$/,"");
+		t.attributes.x.value = parseFloat(r.attributes.x.value) + 3;
+
+		// Smaller than this size won't fit anything
+		if (w < 2 * 12 * 0.59) {
+			t.textContent = "";
+			return;
+		}
+
+		t.textContent = txt;
+		// Fit in full text width
+		if (/^ *$/.test(txt) || t.getSubStringLength(0, txt.length) < w)
+			return;
+
+		for (var x = txt.length - 2; x > 0; x--) {
+			if (t.getSubStringLength(0, x + 2) <= w) {
+				t.textContent = txt.substring(0, x) + "..";
+				return;
+			}
+		}
+		t.textContent = "";
+	}
+
+	// zoom
+	function zoom_reset(e) {
+		if (e.attributes != undefined) {
+			orig_load(e, "x");
+			orig_load(e, "width");
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_reset(c[i]);
+		}
+	}
+	function zoom_child(e, x, ratio) {
+		if (e.attributes != undefined) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = (parseFloat(e.attributes.x.value) - x - 10) * ratio + 10;
+				if (e.tagName == "text")
+					e.attributes.x.value = find_child(e.parentNode, "rect[x]").attributes.x.value + 3;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseFloat(e.attributes.width.value) * ratio;
+			}
+		}
+
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_child(c[i], x - 10, ratio);
+		}
+	}
+	function zoom_parent(e) {
+		if (e.attributes) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = 10;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseInt(svg.width.baseVal.value) - (10 * 2);
+			}
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_parent(c[i]);
+		}
+	}
+	function zoom(node) {
+		var attr = find_child(node, "rect").attributes;
+		var width = parseFloat(attr.width.value);
+		var xmin = parseFloat(attr.x.value);
+		var xmax = parseFloat(xmin + width);
+		var ymin = parseFloat(attr.y.value);
+		var ratio = (svg.width.baseVal.value - 2 * 10) / width;
+
+		// XXX: Workaround for JavaScript float issues (fix me)
+		var fudge = 0.0001;
+
+		unzoombtn.classList.remove("hide");
+
+		var el = document.getElementById("frames").children;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var a = find_child(e, "rect").attributes;
+			var ex = parseFloat(a.x.value);
+			var ew = parseFloat(a.width.value);
+			var upstack;
+			// Is it an ancestor
+			if (0 == 0) {
+				upstack = parseFloat(a.y.value) > ymin;
+			} else {
+				upstack = parseFloat(a.y.value) < ymin;
+			}
+			if (upstack) {
+				// Direct ancestor
+				if (ex <= xmin && (ex+ew+fudge) >= xmax) {
+					e.classList.add("parent");
+					zoom_parent(e);
+					update_text(e);
+				}
+				// not in current path
+				else
+					e.classList.add("hide");
+			}
+			// Children maybe
+			else {
+				// no common path
+				if (ex < xmin || ex + fudge >= xmax) {
+					e.classList.add("hide");
+				}
+				else {
+					zoom_child(e, xmin, ratio);
+					update_text(e);
+				}
+			}
+		}
+	}
+	function unzoom() {
+		unzoombtn.classList.add("hide");
+		var el = document.getElementById("frames").children;
+		for(var i = 0; i < el.length; i++) {
+			el[i].classList.remove("parent");
+			el[i].classList.remove("hide");
+			zoom_reset(el[i]);
+			update_text(el[i]);
+		}
+	}
+
+	// search
+	function reset_search() {
+		var el = document.querySelectorAll("#frames rect");
+		for (var i = 0; i < el.length; i++) {
+			orig_load(el[i], "fill")
+		}
+	}
+	function search_prompt() {
+		if (!searching) {
+			var term = prompt("Enter a search term (regexp " +
+			    "allowed, eg: ^ext4_)", "");
+			if (term != null) {
+				search(term)
+			}
+		} else {
+			reset_search();
+			searching = 0;
+			searchbtn.classList.remove("show");
+			searchbtn.firstChild.nodeValue = "Search"
+			matchedtxt.classList.add("hide");
+			matchedtxt.firstChild.nodeValue = ""
+		}
+	}
+	function search(term) {
+		var re = new RegExp(term);
+		var el = document.getElementById("frames").children;
+		var matches = new Object();
+		var maxwidth = 0;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var func = g_to_func(e);
+			var rect = find_child(e, "rect");
+			if (func == null || rect == null)
+				continue;
+
+			// Save max width. Only works as we have a root frame
+			var w = parseFloat(rect.attributes.width.value);
+			if (w > maxwidth)
+				maxwidth = w;
+
+			if (func.match(re)) {
+				// highlight
+				var x = parseFloat(rect.attributes.x.value);
+				orig_save(rect, "fill");
+				rect.attributes.fill.value = "rgb(230,0,230)";
+
+				// remember matches
+				if (matches[x] == undefined) {
+					matches[x] = w;
+				} else {
+					if (w > matches[x]) {
+						// overwrite with parent
+						matches[x] = w;
+					}
+				}
+				searching = 1;
+			}
+		}
+		if (!searching)
+			return;
+
+		searchbtn.classList.add("show");
+		searchbtn.firstChild.nodeValue = "Reset Search";
+
+		// calculate percent matched, excluding vertical overlap
+		var count = 0;
+		var lastx = -1;
+		var lastw = 0;
+		var keys = Array();
+		for (k in matches) {
+			if (matches.hasOwnProperty(k))
+				keys.push(k);
+		}
+		// sort the matched frames by their x location
+		// ascending, then width descending
+		keys.sort(function(a, b){
+			return a - b;
+		});
+		// Step through frames saving only the biggest bottom-up frames
+		// thanks to the sort order. This relies on the tree property
+		// where children are always smaller than their parents.
+		var fudge = 0.0001;	// JavaScript floating point
+		for (var k in keys) {
+			var x = parseFloat(keys[k]);
+			var w = matches[keys[k]];
+			if (x >= lastx + lastw - fudge) {
+				count += w;
+				lastx = x;
+				lastw = w;
+			}
+		}
+		// display matched percent
+		matchedtxt.classList.remove("hide");
+		var pct = 100 * count / maxwidth;
+		if (pct != 100) pct = pct.toFixed(1)
+		matchedtxt.firstChild.nodeValue = "Matched: " + pct + "%";
+	}
+]]>
+</script>
+<rect x="0.0" y="0" width="6000.0" height="374.0" fill="url(#background)"  />
+<text id="title" x="3000.00" y="24" >Flame Graph</text>
+<text id="details" x="10.00" y="357" > </text>
+<text id="unzoom" x="10.00" y="24" class="hide">Reset Zoom</text>
+<text id="search" x="5890.00" y="24" >Search</text>
+<text id="matched" x="5890.00" y="357" > </text>
+<g id="frames">
+<g >
+<title>std::ios_base::setf(std::_Ios_Fmtflags, std::_Ios_Fmtflags) (7 samples, 0.29%)</title><rect x="4188.4" y="85" width="17.1" height="15.0" fill="rgb(214,36,6)" rx="2" ry="2" />
+<text  x="4191.41" y="95.5" ></text>
+</g>
+<g >
+<title>std::unique_lock&lt;std::mutex&gt;::lock() (102 samples, 4.18%)</title><rect x="4315.7" y="133" width="249.7" height="15.0" fill="rgb(227,113,0)" rx="2" ry="2" />
+<text  x="4318.70" y="143.5" >std::unique_lock&lt;std::mutex&gt;::loc..</text>
+</g>
+<g >
+<title>xorChecksum(std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;) (206 samples, 8.43%)</title><rect x="4575.2" y="149" width="504.2" height="15.0" fill="rgb(241,51,18)" rx="2" ry="2" />
+<text  x="4578.17" y="159.5" >xorChecksum(std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, ..</text>
+</g>
+<g >
+<title>std::__invoke_result&lt;runHackathon(int const*)::{lambda()#3}&gt;::type std::__invoke&lt;runHackathon(int const*)::{lambda()#3}&gt;(std::__invoke_result&amp;&amp;, (runHackathon(int const*)::{lambda()#3}&amp;&amp;)...) (43 samples, 1.76%)</title><rect x="5253.2" y="229" width="105.3" height="15.0" fill="rgb(223,50,40)" rx="2" ry="2" />
+<text  x="5256.21" y="239.5" >std::__invok..</text>
+</g>
+<g >
+<title>std::num_get&lt;char, std::istreambuf_iterator&lt;char, std::char_traits&lt;char&gt; &gt; &gt; const&amp; std::use_facet&lt;std::num_get&lt;char, std::istreambuf_iterator&lt;char, std::char_traits&lt;char&gt; &gt; &gt; &gt;(std::locale const&amp;) (13 samples, 0.53%)</title><rect x="2005.0" y="245" width="31.8" height="15.0" fill="rgb(235,200,38)" rx="2" ry="2" />
+<text  x="2007.97" y="255.5" >st..</text>
+</g>
+<g >
+<title>std::locale::locale() (218 samples, 8.92%)</title><rect x="3023.3" y="261" width="533.6" height="15.0" fill="rgb(251,27,54)" rx="2" ry="2" />
+<text  x="3026.25" y="271.5" >std::locale::locale()</text>
+</g>
+<g >
+<title>std::unique_lock&lt;std::mutex&gt;::lock() (6 samples, 0.25%)</title><rect x="3916.7" y="101" width="14.7" height="15.0" fill="rgb(227,150,49)" rx="2" ry="2" />
+<text  x="3919.70" y="111.5" ></text>
+</g>
+<g >
+<title>__gthread_recursive_mutex_lock(pthread_mutex_t*) (5 samples, 0.20%)</title><rect x="3899.6" y="69" width="12.2" height="15.0" fill="rgb(246,57,7)" rx="2" ry="2" />
+<text  x="3902.57" y="79.5" ></text>
+</g>
+<g >
+<title>std::locale::~locale() (22 samples, 0.90%)</title><rect x="4208.0" y="117" width="53.8" height="15.0" fill="rgb(236,97,33)" rx="2" ry="2" />
+<text  x="4210.99" y="127.5" >std::..</text>
+</g>
+<g >
+<title>Event::deepCopy(Event const&amp;) (9 samples, 0.37%)</title><rect x="3605.8" y="149" width="22.1" height="15.0" fill="rgb(240,118,0)" rx="2" ry="2" />
+<text  x="3608.83" y="159.5" >E..</text>
+</g>
+<g >
+<title>malloc (7 samples, 0.29%)</title><rect x="1204.5" y="277" width="17.2" height="15.0" fill="rgb(231,95,23)" rx="2" ry="2" />
+<text  x="1207.53" y="287.5" ></text>
+</g>
+<g >
+<title>__GI___pthread_timedjoin_ex (5 samples, 0.20%)</title><rect x="39.4" y="245" width="12.2" height="15.0" fill="rgb(252,20,29)" rx="2" ry="2" />
+<text  x="42.37" y="255.5" ></text>
+</g>
+<g >
+<title>Event::~Event() (8 samples, 0.33%)</title><rect x="3632.8" y="165" width="19.5" height="15.0" fill="rgb(247,123,20)" rx="2" ry="2" />
+<text  x="3635.76" y="175.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (218 samples, 8.92%)</title><rect x="1539.9" y="261" width="533.6" height="15.0" fill="rgb(228,31,39)" rx="2" ry="2" />
+<text  x="1542.88" y="271.5" >[[kernel.kallsyms]]</text>
+</g>
+<g >
+<title>std::unique_lock&lt;std::recursive_mutex&gt;::lock() (5 samples, 0.20%)</title><rect x="5255.7" y="133" width="12.2" height="15.0" fill="rgb(210,156,41)" rx="2" ry="2" />
+<text  x="5258.66" y="143.5" ></text>
+</g>
+<g >
+<title>void std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;::_M_construct&lt;char*&gt;(char*, char*, std::forward_iterator_tag) (7 samples, 0.29%)</title><rect x="856.9" y="261" width="17.2" height="15.0" fill="rgb(220,119,36)" rx="2" ry="2" />
+<text  x="859.94" y="271.5" ></text>
+</g>
+<g >
+<title>std::_V2::condition_variable_any::notify_all() (20 samples, 0.82%)</title><rect x="3725.8" y="149" width="48.9" height="15.0" fill="rgb(232,198,27)" rx="2" ry="2" />
+<text  x="3728.78" y="159.5" >std:..</text>
+</g>
+<g >
+<title>Container&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;::operator[](int) (17 samples, 0.70%)</title><rect x="5297.3" y="133" width="41.6" height="15.0" fill="rgb(209,136,5)" rx="2" ry="2" />
+<text  x="5300.27" y="143.5" >Con..</text>
+</g>
+<g >
+<title>std::lock_guard&lt;std::mutex&gt;::lock_guard(std::mutex&amp;) (7 samples, 0.29%)</title><rect x="3738.0" y="133" width="17.1" height="15.0" fill="rgb(248,142,32)" rx="2" ry="2" />
+<text  x="3741.01" y="143.5" ></text>
+</g>
+<g >
+<title>std::recursive_mutex::lock() (12 samples, 0.49%)</title><rect x="4068.5" y="117" width="29.3" height="15.0" fill="rgb(230,228,39)" rx="2" ry="2" />
+<text  x="4071.47" y="127.5" >st..</text>
+</g>
+<g >
+<title>std::basic_ios&lt;char, std::char_traits&lt;char&gt; &gt;::_M_cache_locale(std::locale const&amp;) (16 samples, 0.65%)</title><rect x="565.7" y="261" width="39.1" height="15.0" fill="rgb(219,157,46)" rx="2" ry="2" />
+<text  x="568.65" y="271.5" >std..</text>
+</g>
+<g >
+<title>std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;::empty() const (6 samples, 0.25%)</title><rect x="5228.7" y="165" width="14.7" height="15.0" fill="rgb(235,153,17)" rx="2" ry="2" />
+<text  x="5231.73" y="175.5" ></text>
+</g>
+<g >
+<title>std::__shared_ptr&lt;std::mutex, (__gnu_cxx::_Lock_policy)2&gt;::get() const (5 samples, 0.20%)</title><rect x="3725.8" y="101" width="12.2" height="15.0" fill="rgb(235,109,30)" rx="2" ry="2" />
+<text  x="3728.78" y="111.5" ></text>
+</g>
+<g >
+<title>std::num_put&lt;char, std::ostreambuf_iterator&lt;char, std::char_traits&lt;char&gt; &gt; &gt; const&amp; std::use_facet&lt;std::num_put&lt;char, std::ostreambuf_iterator&lt;char, std::char_traits&lt;char&gt; &gt; &gt; &gt;(std::locale const&amp;) (10 samples, 0.41%)</title><rect x="2036.8" y="245" width="24.5" height="15.0" fill="rgb(231,140,39)" rx="2" ry="2" />
+<text  x="2039.79" y="255.5" >s..</text>
+</g>
+<g >
+<title>std::__cxx11::basic_stringstream&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;::~basic_stringstream() (6 samples, 0.25%)</title><rect x="4741.6" y="133" width="14.7" height="15.0" fill="rgb(249,145,54)" rx="2" ry="2" />
+<text  x="4744.62" y="143.5" ></text>
+</g>
+<g >
+<title>__pthread_mutex_unlock (7 samples, 0.29%)</title><rect x="3757.6" y="101" width="17.1" height="15.0" fill="rgb(252,229,52)" rx="2" ry="2" />
+<text  x="3760.60" y="111.5" ></text>
+</g>
+<g >
+<title>std::hex(std::ios_base&amp;) (14 samples, 0.57%)</title><rect x="5177.3" y="133" width="34.3" height="15.0" fill="rgb(215,74,44)" rx="2" ry="2" />
+<text  x="5180.33" y="143.5" >st..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (41 samples, 1.68%)</title><rect x="1001.4" y="197" width="100.3" height="15.0" fill="rgb(232,32,49)" rx="2" ry="2" />
+<text  x="1004.36" y="207.5" >[[kernel.kal..</text>
+</g>
+<g >
+<title>__dynamic_cast (41 samples, 1.68%)</title><rect x="1539.9" y="245" width="100.3" height="15.0" fill="rgb(206,194,47)" rx="2" ry="2" />
+<text  x="1542.88" y="255.5" >__dynamic_cast</text>
+</g>
+<g >
+<title>std::unique_lock&lt;std::mutex&gt;::unique_lock(std::mutex&amp;) (103 samples, 4.22%)</title><rect x="4313.3" y="149" width="252.1" height="15.0" fill="rgb(234,28,5)" rx="2" ry="2" />
+<text  x="4316.25" y="159.5" >std::unique_lock&lt;std::mutex&gt;::uni..</text>
+</g>
+<g >
+<title>hackathon_fast (2,443 samples, 100.00%)</title><rect x="10.0" y="309" width="5980.0" height="15.0" fill="rgb(222,222,34)" rx="2" ry="2" />
+<text  x="13.00" y="319.5" >hackathon_fast</text>
+</g>
+<g >
+<title>virtual thunk to std::__cxx11::basic_stringstream&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;::~basic_stringstream() (218 samples, 8.92%)</title><rect x="1539.9" y="277" width="533.6" height="15.0" fill="rgb(251,1,45)" rx="2" ry="2" />
+<text  x="1542.88" y="287.5" >virtual thunk to std::__cxx11::basic_stringstream&lt;char, std::char_traits&lt;..</text>
+</g>
+<g >
+<title>__gthread_recursive_mutex_lock(pthread_mutex_t*) (5 samples, 0.20%)</title><rect x="5255.7" y="101" width="12.2" height="15.0" fill="rgb(242,109,51)" rx="2" ry="2" />
+<text  x="5258.66" y="111.5" ></text>
+</g>
+<g >
+<title>__dynamic_cast@plt (6 samples, 0.25%)</title><rect x="249.9" y="261" width="14.7" height="15.0" fill="rgb(224,135,11)" rx="2" ry="2" />
+<text  x="252.89" y="271.5" ></text>
+</g>
+<g >
+<title>void std::__invoke_impl&lt;void, runHackathon(int const*)::{lambda()#1}&gt;(std::__invoke_other, runHackathon(int const*)::{lambda()#1}&amp;&amp;) (289 samples, 11.83%)</title><rect x="3556.9" y="213" width="707.4" height="15.0" fill="rgb(217,227,29)" rx="2" ry="2" />
+<text  x="3559.88" y="223.5" >void std::__invoke_impl&lt;void, runHackathon(int const*)::{lambda()#1}&gt;(std::__invoke_other, runHac..</text>
+</g>
+<g >
+<title>runHackathon(int const*) (51 samples, 2.09%)</title><rect x="991.6" y="245" width="124.8" height="15.0" fill="rgb(251,67,19)" rx="2" ry="2" />
+<text  x="994.57" y="255.5" >runHackathon(in..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (6 samples, 0.25%)</title><rect x="5671.8" y="277" width="14.7" height="15.0" fill="rgb(238,13,12)" rx="2" ry="2" />
+<text  x="5674.78" y="287.5" ></text>
+</g>
+<g >
+<title>Container&lt;Event&gt;::popFront() (29 samples, 1.19%)</title><rect x="3654.8" y="149" width="71.0" height="15.0" fill="rgb(237,1,25)" rx="2" ry="2" />
+<text  x="3657.79" y="159.5" >Containe..</text>
+</g>
+<g >
+<title>std::unique_lock&lt;std::recursive_mutex&gt;::lock() (15 samples, 0.61%)</title><rect x="4061.1" y="133" width="36.7" height="15.0" fill="rgb(239,76,42)" rx="2" ry="2" />
+<text  x="4064.13" y="143.5" >std..</text>
+</g>
+<g >
+<title>hexCharToByte(char) (20 samples, 0.82%)</title><rect x="4680.4" y="117" width="49.0" height="15.0" fill="rgb(225,28,49)" rx="2" ry="2" />
+<text  x="4683.42" y="127.5" >hexC..</text>
+</g>
+<g >
+<title>std::hex(std::ios_base&amp;) (24 samples, 0.98%)</title><rect x="4788.1" y="117" width="58.8" height="15.0" fill="rgb(248,69,47)" rx="2" ry="2" />
+<text  x="4791.13" y="127.5" >std::h..</text>
+</g>
+<g >
+<title>__clone (43 samples, 1.76%)</title><rect x="996.5" y="213" width="105.2" height="15.0" fill="rgb(205,207,11)" rx="2" ry="2" />
+<text  x="999.47" y="223.5" >__clone</text>
+</g>
+<g >
+<title>std::locale::id::_M_id() const (5 samples, 0.20%)</title><rect x="707.6" y="261" width="12.3" height="15.0" fill="rgb(220,147,20)" rx="2" ry="2" />
+<text  x="710.63" y="271.5" ></text>
+</g>
+<g >
+<title>__lll_lock_wait (5 samples, 0.20%)</title><rect x="5255.7" y="85" width="12.2" height="15.0" fill="rgb(205,15,14)" rx="2" ry="2" />
+<text  x="5258.66" y="95.5" ></text>
+</g>
+<g >
+<title>std::unique_lock&lt;std::recursive_mutex&gt;::unique_lock(std::recursive_mutex&amp;) (5 samples, 0.20%)</title><rect x="5116.1" y="149" width="12.3" height="15.0" fill="rgb(222,123,2)" rx="2" ry="2" />
+<text  x="5119.13" y="159.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20 samples, 0.82%)</title><rect x="1424.8" y="261" width="49.0" height="15.0" fill="rgb(223,158,40)" rx="2" ry="2" />
+<text  x="1427.83" y="271.5" >[[ke..</text>
+</g>
+<g >
+<title>crossProduct(Container&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, Container&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;) (35 samples, 1.43%)</title><rect x="5270.3" y="149" width="85.7" height="15.0" fill="rgb(222,165,4)" rx="2" ry="2" />
+<text  x="5273.34" y="159.5" >crossProdu..</text>
+</g>
+<g >
+<title>EventQueue::dequeueEvent() (115 samples, 4.71%)</title><rect x="3652.3" y="165" width="281.5" height="15.0" fill="rgb(250,214,37)" rx="2" ry="2" />
+<text  x="3655.34" y="175.5" >EventQueue::dequeueEvent()</text>
+</g>
+<g >
+<title>std::locale::locale() (5 samples, 0.20%)</title><rect x="1461.6" y="245" width="12.2" height="15.0" fill="rgb(229,99,24)" rx="2" ry="2" />
+<text  x="1464.55" y="255.5" ></text>
+</g>
+<g >
+<title>std::locale::~locale() (78 samples, 3.19%)</title><rect x="4871.4" y="133" width="190.9" height="15.0" fill="rgb(250,177,28)" rx="2" ry="2" />
+<text  x="4874.35" y="143.5" >std::locale::~locale()</text>
+</g>
+<g >
+<title>void std::__invoke_impl&lt;void, runHackathon(int const*)::{lambda()#2}&gt;(std::__invoke_other, runHackathon(int const*)::{lambda()#2}&amp;&amp;) (404 samples, 16.54%)</title><rect x="4264.3" y="213" width="988.9" height="15.0" fill="rgb(225,47,12)" rx="2" ry="2" />
+<text  x="4267.29" y="223.5" >void std::__invoke_impl&lt;void, runHackathon(int const*)::{lambda()#2}&gt;(std::__invoke_other, runHackathon(int const*)::{lambda()#2}&amp;&amp;)</text>
+</g>
+<g >
+<title>Student::run() (287 samples, 11.75%)</title><rect x="3561.8" y="181" width="702.5" height="15.0" fill="rgb(236,76,7)" rx="2" ry="2" />
+<text  x="3564.77" y="191.5" >Student::run()</text>
+</g>
+<g >
+<title>bool std::has_facet&lt;std::num_get&lt;char, std::istreambuf_iterator&lt;char, std::char_traits&lt;char&gt; &gt; &gt; &gt;(std::locale const&amp;) (22 samples, 0.90%)</title><rect x="362.5" y="261" width="53.8" height="15.0" fill="rgb(241,140,2)" rx="2" ry="2" />
+<text  x="365.48" y="271.5" >bool ..</text>
+</g>
+<g >
+<title>cfree@GLIBC_2.2.5 (41 samples, 1.68%)</title><rect x="5686.5" y="293" width="100.3" height="15.0" fill="rgb(250,163,19)" rx="2" ry="2" />
+<text  x="5689.47" y="303.5" >cfree@GLIBC_..</text>
+</g>
+<g >
+<title>std::__invoke_result&lt;runHackathon(int const*)::{lambda()#1}&gt;::type std::__invoke&lt;runHackathon(int const*)::{lambda()#1}&gt;(std::__invoke_result&amp;&amp;, (runHackathon(int const*)::{lambda()#1}&amp;&amp;)...) (289 samples, 11.83%)</title><rect x="3556.9" y="229" width="707.4" height="15.0" fill="rgb(208,138,23)" rx="2" ry="2" />
+<text  x="3559.88" y="239.5" >std::__invoke_result&lt;runHackathon(int const*)::{lambda()#1}&gt;::type std::__invoke&lt;runHackathon(int..</text>
+</g>
+<g >
+<title>std::operator|(std::_Ios_Openmode, std::_Ios_Openmode) (5 samples, 0.20%)</title><rect x="5067.2" y="133" width="12.2" height="15.0" fill="rgb(244,101,32)" rx="2" ry="2" />
+<text  x="5070.18" y="143.5" ></text>
+</g>
+<g >
+<title>[libstdc++.so.6.0.25] (218 samples, 8.92%)</title><rect x="3023.3" y="277" width="533.6" height="15.0" fill="rgb(233,37,51)" rx="2" ry="2" />
+<text  x="3026.25" y="287.5" >[libstdc++.so.6.0.25]</text>
+</g>
+<g >
+<title>bool std::has_facet&lt;std::num_put&lt;char, std::ostreambuf_iterator&lt;char, std::char_traits&lt;char&gt; &gt; &gt; &gt;(std::locale const&amp;) (18 samples, 0.74%)</title><rect x="1713.7" y="245" width="44.0" height="15.0" fill="rgb(254,46,43)" rx="2" ry="2" />
+<text  x="1716.68" y="255.5" >bool..</text>
+</g>
+<g >
+<title>__cxxabiv1::__si_class_type_info::__do_dyncast(long, __cxxabiv1::__class_type_info::__sub_kind, __cxxabiv1::__class_type_info const*, void const*, __cxxabiv1::__class_type_info const*, void const*, __cxxabiv1::__class_type_info::__dyncast_result&amp;) const (19 samples, 0.78%)</title><rect x="5375.6" y="293" width="46.5" height="15.0" fill="rgb(240,186,33)" rx="2" ry="2" />
+<text  x="5378.60" y="303.5" >__cx..</text>
+</g>
+<g >
+<title>PackageDownloader::run() (402 samples, 16.46%)</title><rect x="4264.3" y="181" width="984.0" height="15.0" fill="rgb(212,21,35)" rx="2" ry="2" />
+<text  x="4267.29" y="191.5" >PackageDownloader::run()</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (21 samples, 0.86%)</title><rect x="1356.3" y="261" width="51.4" height="15.0" fill="rgb(243,119,52)" rx="2" ry="2" />
+<text  x="1359.30" y="271.5" >[[ker..</text>
+</g>
+<g >
+<title>std::thread::_State_impl&lt;std::thread::_Invoker&lt;std::tuple&lt;runHackathon(int const*)::{lambda()#1}&gt; &gt; &gt;::_M_run() (289 samples, 11.83%)</title><rect x="3556.9" y="277" width="707.4" height="15.0" fill="rgb(236,75,52)" rx="2" ry="2" />
+<text  x="3559.88" y="287.5" >std::thread::_State_impl&lt;std::thread::_Invoker&lt;std::tuple&lt;runHackathon(int const*)::{lambda()#1}&gt;..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (5 samples, 0.20%)</title><rect x="3899.6" y="37" width="12.2" height="15.0" fill="rgb(246,105,33)" rx="2" ry="2" />
+<text  x="3902.57" y="47.5" ></text>
+</g>
+<g >
+<title>std::recursive_mutex::unlock() (10 samples, 0.41%)</title><rect x="3860.4" y="133" width="24.5" height="15.0" fill="rgb(254,1,18)" rx="2" ry="2" />
+<text  x="3863.41" y="143.5" >s..</text>
+</g>
+<g >
+<title>Container&lt;StrPair&gt;::pushBack(StrPair) (7 samples, 0.29%)</title><rect x="5272.8" y="117" width="17.1" height="15.0" fill="rgb(230,20,15)" rx="2" ry="2" />
+<text  x="5275.79" y="127.5" ></text>
+</g>
+<g >
+<title>Container&lt;StrPair&gt;::push(StrPair) (11 samples, 0.45%)</title><rect x="5270.3" y="133" width="27.0" height="15.0" fill="rgb(209,81,43)" rx="2" ry="2" />
+<text  x="5273.34" y="143.5" >C..</text>
+</g>
+<g >
+<title>std::thread::_Invoker&lt;std::tuple&lt;runHackathon(int const*)::{lambda()#2}&gt; &gt;::operator()() (404 samples, 16.54%)</title><rect x="4264.3" y="261" width="988.9" height="15.0" fill="rgb(221,159,32)" rx="2" ry="2" />
+<text  x="4267.29" y="271.5" >std::thread::_Invoker&lt;std::tuple&lt;runHackathon(int const*)::{lambda()#2}&gt; &gt;::operator()()</text>
+</g>
+<g >
+<title>std::locale::id::_M_id() const@plt (5 samples, 0.20%)</title><rect x="719.9" y="261" width="12.2" height="15.0" fill="rgb(218,139,5)" rx="2" ry="2" />
+<text  x="722.86" y="271.5" ></text>
+</g>
+<g >
+<title>std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;::_M_create(unsigned long&amp;, unsigned long) (8 samples, 0.33%)</title><rect x="536.3" y="261" width="19.6" height="15.0" fill="rgb(235,212,30)" rx="2" ry="2" />
+<text  x="539.28" y="271.5" ></text>
+</g>
+<g >
+<title>__clone (7 samples, 0.29%)</title><rect x="5358.5" y="293" width="17.1" height="15.0" fill="rgb(252,147,15)" rx="2" ry="2" />
+<text  x="5361.47" y="303.5" ></text>
+</g>
+<g >
+<title>std::recursive_mutex::lock() (31 samples, 1.27%)</title><rect x="3784.5" y="117" width="75.9" height="15.0" fill="rgb(240,107,44)" rx="2" ry="2" />
+<text  x="3787.52" y="127.5" >std::rec..</text>
+</g>
+<g >
+<title>std::mutex::lock() (6 samples, 0.25%)</title><rect x="3916.7" y="85" width="14.7" height="15.0" fill="rgb(236,17,41)" rx="2" ry="2" />
+<text  x="3919.70" y="95.5" ></text>
+</g>
+<g >
+<title>std::thread::_M_start_thread(std::unique_ptr&lt;std::thread::_State, std::default_delete&lt;std::thread::_State&gt; &gt;, void (*)()) (50 samples, 2.05%)</title><rect x="994.0" y="229" width="122.4" height="15.0" fill="rgb(246,149,52)" rx="2" ry="2" />
+<text  x="997.02" y="239.5" >std::thread::_M..</text>
+</g>
+<g >
+<title>std::basic_ostream&lt;char, std::char_traits&lt;char&gt; &gt;&amp; std::operator&lt;&lt; &lt;char, std::char_traits&lt;char&gt; &gt;(std::basic_ostream&lt;char, std::char_traits&lt;char&gt; &gt;&amp;, std::_Setfill&lt;char&gt;) (11 samples, 0.45%)</title><rect x="1877.7" y="245" width="26.9" height="15.0" fill="rgb(216,18,47)" rx="2" ry="2" />
+<text  x="1880.68" y="255.5" >s..</text>
+</g>
+<g >
+<title>[libstdc++.so.6.0.25] (9 samples, 0.37%)</title><rect x="1799.3" y="229" width="22.1" height="15.0" fill="rgb(250,36,37)" rx="2" ry="2" />
+<text  x="1802.35" y="239.5" >[..</text>
+</g>
+<g >
+<title>__libc_start_main (51 samples, 2.09%)</title><rect x="991.6" y="277" width="124.8" height="15.0" fill="rgb(225,73,25)" rx="2" ry="2" />
+<text  x="994.57" y="287.5" >__libc_start_main</text>
+</g>
+<g >
+<title>decltype (__invoke((_S_declval&lt;0ul&gt;)())) std::thread::_Invoker&lt;std::tuple&lt;runHackathon(int const*)::{lambda()#2}&gt; &gt;::_M_invoke&lt;0ul&gt;(std::_Index_tuple&lt;0ul&gt;) (404 samples, 16.54%)</title><rect x="4264.3" y="245" width="988.9" height="15.0" fill="rgb(211,227,52)" rx="2" ry="2" />
+<text  x="4267.29" y="255.5" >decltype (__invoke((_S_declval&lt;0ul&gt;)())) std::thread::_Invoker&lt;std::tuple&lt;runHackathon(int const*)::{lambda()#2}&gt; &gt;::_M_invoke&lt;0ul&gt;(std::..</text>
+</g>
+<g >
+<title>__gthread_recursive_mutex_unlock(pthread_mutex_t*) (9 samples, 0.37%)</title><rect x="3862.9" y="117" width="22.0" height="15.0" fill="rgb(235,150,35)" rx="2" ry="2" />
+<text  x="3865.85" y="127.5" >_..</text>
+</g>
+<g >
+<title>EventQueue::enqueueEvent(Event, bool) (6 samples, 0.25%)</title><rect x="5253.2" y="165" width="14.7" height="15.0" fill="rgb(231,185,17)" rx="2" ry="2" />
+<text  x="5256.21" y="175.5" ></text>
+</g>
+<g >
+<title>runHackathon(int const*)::{lambda()#2}::operator()() const (404 samples, 16.54%)</title><rect x="4264.3" y="197" width="988.9" height="15.0" fill="rgb(249,118,10)" rx="2" ry="2" />
+<text  x="4267.29" y="207.5" >runHackathon(int const*)::{lambda()#2}::operator()() const</text>
+</g>
+<g >
+<title>Event::deepCopy(Event const&amp;) (15 samples, 0.61%)</title><rect x="3686.6" y="117" width="36.7" height="15.0" fill="rgb(216,128,23)" rx="2" ry="2" />
+<text  x="3689.61" y="127.5" >Eve..</text>
+</g>
+<g >
+<title>std::basic_ostream&lt;char, std::char_traits&lt;char&gt; &gt;&amp; std::basic_ostream&lt;char, std::char_traits&lt;char&gt; &gt;::_M_insert&lt;long&gt;(long) (42 samples, 1.72%)</title><rect x="1774.9" y="245" width="102.8" height="15.0" fill="rgb(223,228,32)" rx="2" ry="2" />
+<text  x="1777.87" y="255.5" >std::basic_o..</text>
+</g>
+<g >
+<title>__GI___libc_open (9 samples, 0.37%)</title><rect x="913.2" y="277" width="22.1" height="15.0" fill="rgb(207,97,5)" rx="2" ry="2" />
+<text  x="916.24" y="287.5" >_..</text>
+</g>
+<g >
+<title>Idea::Idea(std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, int) (5 samples, 0.20%)</title><rect x="3970.6" y="101" width="12.2" height="15.0" fill="rgb(233,38,5)" rx="2" ry="2" />
+<text  x="3973.56" y="111.5" ></text>
+</g>
+<g >
+<title>Event::operator=(Event const&amp;) (6 samples, 0.25%)</title><rect x="3946.1" y="133" width="14.7" height="15.0" fill="rgb(234,141,51)" rx="2" ry="2" />
+<text  x="3949.08" y="143.5" ></text>
+</g>
+<g >
+<title>std::basic_ostream&lt;char, std::char_traits&lt;char&gt; &gt;::sentry::~sentry() (11 samples, 0.45%)</title><rect x="1904.6" y="245" width="26.9" height="15.0" fill="rgb(244,133,48)" rx="2" ry="2" />
+<text  x="1907.60" y="255.5" >s..</text>
+</g>
+<g >
+<title>hexStrToByte(char, char) (32 samples, 1.31%)</title><rect x="4651.0" y="133" width="78.4" height="15.0" fill="rgb(207,50,32)" rx="2" ry="2" />
+<text  x="4654.05" y="143.5" >hexStrToB..</text>
+</g>
+<g >
+<title>std::thread::_State_impl&lt;std::thread::_Invoker&lt;std::tuple&lt;runHackathon(int const*)::{lambda()#3}&gt; &gt; &gt;::_M_run() (43 samples, 1.76%)</title><rect x="5253.2" y="277" width="105.3" height="15.0" fill="rgb(219,22,43)" rx="2" ry="2" />
+<text  x="5256.21" y="287.5" >std::thread:..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (5 samples, 0.20%)</title><rect x="1101.7" y="197" width="12.3" height="15.0" fill="rgb(233,77,25)" rx="2" ry="2" />
+<text  x="1104.72" y="207.5" ></text>
+</g>
+<g >
+<title>Idea::clone() (5 samples, 0.20%)</title><rect x="3970.6" y="117" width="12.2" height="15.0" fill="rgb(213,160,52)" rx="2" ry="2" />
+<text  x="3973.56" y="127.5" ></text>
+</g>
+<g >
+<title>__mprotect (5 samples, 0.20%)</title><rect x="1101.7" y="213" width="12.3" height="15.0" fill="rgb(224,209,25)" rx="2" ry="2" />
+<text  x="1104.72" y="223.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (9 samples, 0.37%)</title><rect x="10.0" y="229" width="22.0" height="15.0" fill="rgb(210,110,9)" rx="2" ry="2" />
+<text  x="13.00" y="239.5" >[..</text>
+</g>
+<g >
+<title>__lll_lock_wait (5 samples, 0.20%)</title><rect x="4073.4" y="85" width="12.2" height="15.0" fill="rgb(239,200,23)" rx="2" ry="2" />
+<text  x="4076.36" y="95.5" ></text>
+</g>
+<g >
+<title>std::ios_base::setf(std::_Ios_Fmtflags, std::_Ios_Fmtflags) (12 samples, 0.49%)</title><rect x="5177.3" y="117" width="29.4" height="15.0" fill="rgb(215,147,51)" rx="2" ry="2" />
+<text  x="5180.33" y="127.5" >st..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (5 samples, 0.20%)</title><rect x="39.4" y="213" width="12.2" height="15.0" fill="rgb(209,51,34)" rx="2" ry="2" />
+<text  x="42.37" y="223.5" ></text>
+</g>
+<g >
+<title>__gthread_recursive_mutex_lock(pthread_mutex_t*) (10 samples, 0.41%)</title><rect x="4073.4" y="101" width="24.4" height="15.0" fill="rgb(239,7,27)" rx="2" ry="2" />
+<text  x="4076.36" y="111.5" >_..</text>
+</g>
+<g >
+<title>std::unique_lock&lt;std::recursive_mutex&gt;::unique_lock(std::recursive_mutex&amp;) (16 samples, 0.65%)</title><rect x="4058.7" y="149" width="39.1" height="15.0" fill="rgb(234,164,38)" rx="2" ry="2" />
+<text  x="4061.68" y="159.5" >std..</text>
+</g>
+<g >
+<title>std::thread::_State_impl&lt;std::thread::_Invoker&lt;std::tuple&lt;runHackathon(int const*)::{lambda()#2}&gt; &gt; &gt;::_M_run() (404 samples, 16.54%)</title><rect x="4264.3" y="277" width="988.9" height="15.0" fill="rgb(242,108,53)" rx="2" ry="2" />
+<text  x="4267.29" y="287.5" >std::thread::_State_impl&lt;std::thread::_Invoker&lt;std::tuple&lt;runHackathon(int const*)::{lambda()#2}&gt; &gt; &gt;::_M_run()</text>
+</g>
+<g >
+<title>__dynamic_cast (76 samples, 3.11%)</title><rect x="63.9" y="261" width="186.0" height="15.0" fill="rgb(227,199,33)" rx="2" ry="2" />
+<text  x="66.85" y="271.5" >__dynamic_cast</text>
+</g>
+<g >
+<title>pthread_cond_wait@@GLIBC_2.3.2 (52 samples, 2.13%)</title><rect x="1221.7" y="277" width="127.3" height="15.0" fill="rgb(218,56,33)" rx="2" ry="2" />
+<text  x="1224.67" y="287.5" >pthread_cond_wa..</text>
+</g>
+<g >
+<title>EventQueue::enqueueEvent(Event, bool) (74 samples, 3.03%)</title><rect x="3933.8" y="165" width="181.2" height="15.0" fill="rgb(242,190,15)" rx="2" ry="2" />
+<text  x="3936.84" y="175.5" >EventQueue::enqueueEven..</text>
+</g>
+<g >
+<title>std::mutex::lock() (7 samples, 0.29%)</title><rect x="5094.1" y="117" width="17.1" height="15.0" fill="rgb(232,7,38)" rx="2" ry="2" />
+<text  x="5097.10" y="127.5" ></text>
+</g>
+<g >
+<title>EventQueue::enqueueEvent(Event, bool) (22 samples, 0.90%)</title><rect x="5081.9" y="165" width="53.8" height="15.0" fill="rgb(213,93,22)" rx="2" ry="2" />
+<text  x="5084.86" y="175.5" >Event..</text>
+</g>
+<g >
+<title>std::thread::_Invoker&lt;std::tuple&lt;runHackathon(int const*)::{lambda()#1}&gt; &gt;::operator()() (289 samples, 11.83%)</title><rect x="3556.9" y="261" width="707.4" height="15.0" fill="rgb(236,88,10)" rx="2" ry="2" />
+<text  x="3559.88" y="271.5" >std::thread::_Invoker&lt;std::tuple&lt;runHackathon(int const*)::{lambda()#1}&gt; &gt;::operator()()</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (844 samples, 34.55%)</title><rect x="10.0" y="293" width="2066.0" height="15.0" fill="rgb(237,159,13)" rx="2" ry="2" />
+<text  x="13.00" y="303.5" >[[kernel.kallsyms]]</text>
+</g>
+<g >
+<title>__cxxabiv1::__si_class_type_info::__do_dyncast(long, __cxxabiv1::__class_type_info::__sub_kind, __cxxabiv1::__class_type_info const*, void const*, __cxxabiv1::__class_type_info const*, void const*, __cxxabiv1::__class_type_info::__dyncast_result&amp;) const (21 samples, 0.86%)</title><rect x="1473.8" y="245" width="51.4" height="15.0" fill="rgb(243,168,5)" rx="2" ry="2" />
+<text  x="1476.79" y="255.5" >__cxx..</text>
+</g>
+<g >
+<title>bytesToString[abi:cxx11](unsigned char*, int) (6 samples, 0.25%)</title><rect x="5143.1" y="149" width="14.6" height="15.0" fill="rgb(233,202,6)" rx="2" ry="2" />
+<text  x="5146.06" y="159.5" ></text>
+</g>
+<g >
+<title>std::lock_guard&lt;std::mutex&gt;::~lock_guard() (8 samples, 0.33%)</title><rect x="3755.1" y="133" width="19.6" height="15.0" fill="rgb(238,208,53)" rx="2" ry="2" />
+<text  x="3758.15" y="143.5" ></text>
+</g>
+<g >
+<title>std::locale::id::_M_id() const (5 samples, 0.20%)</title><rect x="1975.6" y="245" width="12.2" height="15.0" fill="rgb(234,182,16)" rx="2" ry="2" />
+<text  x="1978.59" y="255.5" ></text>
+</g>
+<g >
+<title>xorChecksum(std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;) (44 samples, 1.80%)</title><rect x="4154.1" y="133" width="107.7" height="15.0" fill="rgb(243,151,24)" rx="2" ry="2" />
+<text  x="4157.14" y="143.5" >xorChecksum(s..</text>
+</g>
+<g >
+<title>__pthread_mutex_lock (5 samples, 0.20%)</title><rect x="3742.9" y="101" width="12.2" height="15.0" fill="rgb(218,214,1)" rx="2" ry="2" />
+<text  x="3745.91" y="111.5" ></text>
+</g>
+<g >
+<title>__cxxabiv1::__vmi_class_type_info::__do_dyncast(long, __cxxabiv1::__class_type_info::__sub_kind, __cxxabiv1::__class_type_info const*, void const*, __cxxabiv1::__class_type_info const*, void const*, __cxxabiv1::__class_type_info::__dyncast_result&amp;) const (21 samples, 0.86%)</title><rect x="935.3" y="277" width="51.4" height="15.0" fill="rgb(209,78,54)" rx="2" ry="2" />
+<text  x="938.27" y="287.5" >__cxx..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (6 samples, 0.25%)</title><rect x="2078.4" y="261" width="14.7" height="15.0" fill="rgb(241,11,42)" rx="2" ry="2" />
+<text  x="2081.40" y="271.5" ></text>
+</g>
+<g >
+<title>Event::Event(Event const&amp;) (9 samples, 0.37%)</title><rect x="3605.8" y="165" width="22.1" height="15.0" fill="rgb(211,62,2)" rx="2" ry="2" />
+<text  x="3608.83" y="175.5" >E..</text>
+</g>
+<g >
+<title>Container&lt;Event&gt;::Node::~Node() (7 samples, 0.29%)</title><rect x="3667.0" y="133" width="17.2" height="15.0" fill="rgb(232,26,29)" rx="2" ry="2" />
+<text  x="3670.03" y="143.5" ></text>
+</g>
+<g >
+<title>main (51 samples, 2.09%)</title><rect x="991.6" y="261" width="124.8" height="15.0" fill="rgb(235,23,19)" rx="2" ry="2" />
+<text  x="994.57" y="271.5" >main</text>
+</g>
+<g >
+<title>std::thread::_Invoker&lt;std::tuple&lt;runHackathon(int const*)::{lambda()#3}&gt; &gt;::operator()() (43 samples, 1.76%)</title><rect x="5253.2" y="261" width="105.3" height="15.0" fill="rgb(211,169,34)" rx="2" ry="2" />
+<text  x="5256.21" y="271.5" >std::thread:..</text>
+</g>
+<g >
+<title>std::num_get&lt;char, std::istreambuf_iterator&lt;char, std::char_traits&lt;char&gt; &gt; &gt;::~num_get() (21 samples, 0.86%)</title><rect x="1473.8" y="277" width="51.4" height="15.0" fill="rgb(205,219,6)" rx="2" ry="2" />
+<text  x="1476.79" y="287.5" >std::..</text>
+</g>
+<g >
+<title>std::locale::~locale()@plt (5 samples, 0.20%)</title><rect x="3011.0" y="261" width="12.3" height="15.0" fill="rgb(243,70,0)" rx="2" ry="2" />
+<text  x="3014.02" y="271.5" ></text>
+</g>
+<g >
+<title>bool std::has_facet&lt;std::num_get&lt;char, std::istreambuf_iterator&lt;char, std::char_traits&lt;char&gt; &gt; &gt; &gt;(std::locale const&amp;) (13 samples, 0.53%)</title><rect x="1679.4" y="245" width="31.8" height="15.0" fill="rgb(238,201,47)" rx="2" ry="2" />
+<text  x="1682.41" y="255.5" >bo..</text>
+</g>
+<g >
+<title>Event::deepCopy(Event const&amp;) (5 samples, 0.20%)</title><rect x="3948.5" y="117" width="12.3" height="15.0" fill="rgb(237,118,16)" rx="2" ry="2" />
+<text  x="3951.53" y="127.5" ></text>
+</g>
+<g >
+<title>__lll_lock_wait (5 samples, 0.20%)</title><rect x="3916.7" y="69" width="12.2" height="15.0" fill="rgb(224,121,23)" rx="2" ry="2" />
+<text  x="3919.70" y="79.5" ></text>
+</g>
+<g >
+<title>__pthread_mutex_unlock (5 samples, 0.20%)</title><rect x="4036.6" y="101" width="12.3" height="15.0" fill="rgb(244,148,40)" rx="2" ry="2" />
+<text  x="4039.65" y="111.5" ></text>
+</g>
+<g >
+<title>std::basic_streambuf&lt;char, std::char_traits&lt;char&gt; &gt;::xsputn(char const*, long) (6 samples, 0.25%)</title><rect x="1390.6" y="245" width="14.7" height="15.0" fill="rgb(229,186,9)" rx="2" ry="2" />
+<text  x="1393.56" y="255.5" ></text>
+</g>
+<g >
+<title>__lll_lock_wait (100 samples, 4.09%)</title><rect x="4315.7" y="101" width="244.8" height="15.0" fill="rgb(223,175,7)" rx="2" ry="2" />
+<text  x="4318.70" y="111.5" >__lll_lock_wait</text>
+</g>
+<g >
+<title>std::basic_ostream&lt;char, std::char_traits&lt;char&gt; &gt;&amp; std::operator&lt;&lt; &lt;char, std::char_traits&lt;char&gt; &gt;(std::basic_ostream&lt;char, std::char_traits&lt;char&gt; &gt;&amp;, std::_Setw) (5 samples, 0.20%)</title><rect x="4768.5" y="133" width="12.3" height="15.0" fill="rgb(223,43,41)" rx="2" ry="2" />
+<text  x="4771.54" y="143.5" ></text>
+</g>
+<g >
+<title>std::hex(std::ios_base&amp;) (7 samples, 0.29%)</title><rect x="4188.4" y="101" width="17.1" height="15.0" fill="rgb(232,35,1)" rx="2" ry="2" />
+<text  x="4191.41" y="111.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (47 samples, 1.92%)</title><rect x="1233.9" y="261" width="115.1" height="15.0" fill="rgb(206,44,10)" rx="2" ry="2" />
+<text  x="1236.91" y="271.5" >[[kernel.kalls..</text>
+</g>
+<g >
+<title>std::__cxx11::basic_stringbuf&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;::overflow(int) (7 samples, 0.29%)</title><rect x="5926.4" y="293" width="17.1" height="15.0" fill="rgb(240,70,6)" rx="2" ry="2" />
+<text  x="5929.36" y="303.5" ></text>
+</g>
+<g >
+<title>std::basic_ostream&lt;char, std::char_traits&lt;char&gt; &gt;::operator&lt;&lt;(std::ios_base&amp; (*)(std::ios_base&amp;)) (8 samples, 0.33%)</title><rect x="4188.4" y="117" width="19.6" height="15.0" fill="rgb(237,20,30)" rx="2" ry="2" />
+<text  x="4191.41" y="127.5" ></text>
+</g>
+<g >
+<title>_int_malloc (10 samples, 0.41%)</title><rect x="5647.3" y="293" width="24.5" height="15.0" fill="rgb(222,142,19)" rx="2" ry="2" />
+<text  x="5650.31" y="303.5" >_..</text>
+</g>
+<g >
+<title>bool std::has_facet&lt;std::num_put&lt;char, std::ostreambuf_iterator&lt;char, std::char_traits&lt;char&gt; &gt; &gt; &gt;(std::locale const&amp;) (37 samples, 1.51%)</title><rect x="416.3" y="261" width="90.6" height="15.0" fill="rgb(249,69,46)" rx="2" ry="2" />
+<text  x="419.34" y="271.5" >bool std::..</text>
+</g>
+<g >
+<title>[libstdc++.so.6.0.25] (1,341 samples, 54.89%)</title><rect x="2076.0" y="293" width="3282.5" height="15.0" fill="rgb(254,171,43)" rx="2" ry="2" />
+<text  x="2078.95" y="303.5" >[libstdc++.so.6.0.25]</text>
+</g>
+<g >
+<title>std::_V2::condition_variable_any::_Unlock&lt;std::unique_lock&lt;std::recursive_mutex&gt; &gt;::~_Unlock() (5 samples, 0.20%)</title><rect x="3899.6" y="117" width="12.2" height="15.0" fill="rgb(242,115,10)" rx="2" ry="2" />
+<text  x="3902.57" y="127.5" ></text>
+</g>
+<g >
+<title>Event::deepCopy(Event const&amp;) (12 samples, 0.49%)</title><rect x="3965.7" y="133" width="29.3" height="15.0" fill="rgb(231,125,6)" rx="2" ry="2" />
+<text  x="3968.66" y="143.5" >Ev..</text>
+</g>
+<g >
+<title>std::ctype&lt;char&gt; const&amp; std::use_facet&lt;std::ctype&lt;char&gt; &gt;(std::locale const&amp;) (16 samples, 0.65%)</title><rect x="1936.4" y="245" width="39.2" height="15.0" fill="rgb(206,126,41)" rx="2" ry="2" />
+<text  x="1939.43" y="255.5" >std..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (14 samples, 0.57%)</title><rect x="3804.1" y="69" width="34.3" height="15.0" fill="rgb(233,128,45)" rx="2" ry="2" />
+<text  x="3807.11" y="79.5" >[[..</text>
+</g>
+<g >
+<title>Event::Event(Event const&amp;) (13 samples, 0.53%)</title><rect x="3963.2" y="149" width="31.8" height="15.0" fill="rgb(208,224,27)" rx="2" ry="2" />
+<text  x="3966.21" y="159.5" >Ev..</text>
+</g>
+<g >
+<title>Student::buildIdea() (57 samples, 2.33%)</title><rect x="4122.3" y="165" width="139.5" height="15.0" fill="rgb(230,64,43)" rx="2" ry="2" />
+<text  x="4125.32" y="175.5" >Student::buildIde..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (22 samples, 0.90%)</title><rect x="10.0" y="261" width="53.9" height="15.0" fill="rgb(233,22,26)" rx="2" ry="2" />
+<text  x="13.00" y="271.5" >[[ker..</text>
+</g>
+<g >
+<title>Container&lt;Package*&gt;::push(Package*) (5 samples, 0.20%)</title><rect x="3593.6" y="165" width="12.2" height="15.0" fill="rgb(219,203,40)" rx="2" ry="2" />
+<text  x="3596.59" y="175.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (12 samples, 0.49%)</title><rect x="10.0" y="245" width="29.4" height="15.0" fill="rgb(237,86,47)" rx="2" ry="2" />
+<text  x="13.00" y="255.5" >[[..</text>
+</g>
+<g >
+<title>void std::_V2::condition_variable_any::wait&lt;std::unique_lock&lt;std::recursive_mutex&gt; &gt;(std::unique_lock&lt;std::recursive_mutex&gt;&amp;) (17 samples, 0.70%)</title><rect x="3892.2" y="133" width="41.6" height="15.0" fill="rgb(221,25,29)" rx="2" ry="2" />
+<text  x="3895.23" y="143.5" >voi..</text>
+</g>
+<g >
+<title>std::mutex::unlock() (8 samples, 0.33%)</title><rect x="3755.1" y="117" width="19.6" height="15.0" fill="rgb(227,162,2)" rx="2" ry="2" />
+<text  x="3758.15" y="127.5" ></text>
+</g>
+<g >
+<title>all (2,443 samples, 100%)</title><rect x="10.0" y="325" width="5980.0" height="15.0" fill="rgb(225,20,35)" rx="2" ry="2" />
+<text  x="13.00" y="335.5" ></text>
+</g>
+<g >
+<title>_start (6 samples, 0.25%)</title><rect x="5671.8" y="293" width="14.7" height="15.0" fill="rgb(254,99,23)" rx="2" ry="2" />
+<text  x="5674.78" y="303.5" ></text>
+</g>
+<g >
+<title>std::locale::operator=(std::locale const&amp;) (208 samples, 8.51%)</title><rect x="2274.2" y="261" width="509.2" height="15.0" fill="rgb(214,67,3)" rx="2" ry="2" />
+<text  x="2277.22" y="271.5" >std::locale::operator=(std::locale const&amp;)</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (21 samples, 0.86%)</title><rect x="1473.8" y="261" width="51.4" height="15.0" fill="rgb(218,156,54)" rx="2" ry="2" />
+<text  x="1476.79" y="271.5" >[[ker..</text>
+</g>
+<g >
+<title>Event::Event(Event const&amp;) (17 samples, 0.70%)</title><rect x="3684.2" y="133" width="41.6" height="15.0" fill="rgb(230,87,49)" rx="2" ry="2" />
+<text  x="3687.16" y="143.5" >Eve..</text>
+</g>
+<g >
+<title>__lll_lock_wait (5 samples, 0.20%)</title><rect x="3899.6" y="53" width="12.2" height="15.0" fill="rgb(232,2,20)" rx="2" ry="2" />
+<text  x="3902.57" y="63.5" ></text>
+</g>
+<g >
+<title>std::__cxx11::basic_stringbuf&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;::~basic_stringbuf() (21 samples, 0.86%)</title><rect x="1356.3" y="277" width="51.4" height="15.0" fill="rgb(232,201,39)" rx="2" ry="2" />
+<text  x="1359.30" y="287.5" >std::..</text>
+</g>
+<g >
+<title>decltype (__invoke((_S_declval&lt;0ul&gt;)())) std::thread::_Invoker&lt;std::tuple&lt;runHackathon(int const*)::{lambda()#3}&gt; &gt;::_M_invoke&lt;0ul&gt;(std::_Index_tuple&lt;0ul&gt;) (43 samples, 1.76%)</title><rect x="5253.2" y="245" width="105.3" height="15.0" fill="rgb(246,1,44)" rx="2" ry="2" />
+<text  x="5256.21" y="255.5" >decltype (__..</text>
+</g>
+<g >
+<title>std::unique_lock&lt;std::recursive_mutex&gt;::lock() (32 samples, 1.31%)</title><rect x="3782.1" y="133" width="78.3" height="15.0" fill="rgb(247,55,45)" rx="2" ry="2" />
+<text  x="3785.08" y="143.5" >std::uniq..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (8 samples, 0.33%)</title><rect x="10.0" y="213" width="19.6" height="15.0" fill="rgb(234,108,5)" rx="2" ry="2" />
+<text  x="13.00" y="223.5" ></text>
+</g>
+<g >
+<title>std::_V2::condition_variable_any::notify_all() (10 samples, 0.41%)</title><rect x="5091.7" y="149" width="24.4" height="15.0" fill="rgb(233,10,25)" rx="2" ry="2" />
+<text  x="5094.65" y="159.5" >s..</text>
+</g>
+<g >
+<title>std::mutex::unlock() (5 samples, 0.20%)</title><rect x="4036.6" y="117" width="12.3" height="15.0" fill="rgb(215,49,17)" rx="2" ry="2" />
+<text  x="4039.65" y="127.5" ></text>
+</g>
+<g >
+<title>__pthread_mutex_unlock (6 samples, 0.25%)</title><rect x="3870.2" y="101" width="14.7" height="15.0" fill="rgb(236,176,23)" rx="2" ry="2" />
+<text  x="3873.20" y="111.5" ></text>
+</g>
+<g >
+<title>std::ios_base::setf(std::_Ios_Fmtflags, std::_Ios_Fmtflags) (17 samples, 0.70%)</title><rect x="4795.5" y="101" width="41.6" height="15.0" fill="rgb(249,207,33)" rx="2" ry="2" />
+<text  x="4798.47" y="111.5" >std..</text>
+</g>
+<g >
+<title>__cxxabiv1::__vmi_class_type_info::__do_dyncast(long, __cxxabiv1::__class_type_info::__sub_kind, __cxxabiv1::__class_type_info const*, void const*, __cxxabiv1::__class_type_info const*, void const*, __cxxabiv1::__class_type_info::__dyncast_result&amp;) const (25 samples, 1.02%)</title><rect x="5422.1" y="293" width="61.2" height="15.0" fill="rgb(222,91,28)" rx="2" ry="2" />
+<text  x="5425.11" y="303.5" >__cxxa..</text>
+</g>
+<g >
+<title>std::mutex::lock() (6 samples, 0.25%)</title><rect x="3740.5" y="117" width="14.6" height="15.0" fill="rgb(234,111,7)" rx="2" ry="2" />
+<text  x="3743.46" y="127.5" ></text>
+</g>
+<g >
+<title>std::ios_base::~ios_base() (20 samples, 0.82%)</title><rect x="1424.8" y="277" width="49.0" height="15.0" fill="rgb(214,203,19)" rx="2" ry="2" />
+<text  x="1427.83" y="287.5" >std:..</text>
+</g>
+<g >
+<title>bytesToString[abi:cxx11](unsigned char*, int) (12 samples, 0.49%)</title><rect x="4611.9" y="133" width="29.4" height="15.0" fill="rgb(220,190,38)" rx="2" ry="2" />
+<text  x="4614.88" y="143.5" >by..</text>
+</g>
+<g >
+<title>bool std::has_facet&lt;std::ctype&lt;char&gt; &gt;(std::locale const&amp;) (13 samples, 0.53%)</title><rect x="1645.1" y="245" width="31.9" height="15.0" fill="rgb(247,207,52)" rx="2" ry="2" />
+<text  x="1648.14" y="255.5" >bo..</text>
+</g>
+<g >
+<title>malloc (28 samples, 1.15%)</title><rect x="5789.3" y="293" width="68.5" height="15.0" fill="rgb(227,179,12)" rx="2" ry="2" />
+<text  x="5792.28" y="303.5" >malloc</text>
+</g>
+<g >
+<title>std::_V2::condition_variable_any::notify_all() (13 samples, 0.53%)</title><rect x="4017.1" y="149" width="31.8" height="15.0" fill="rgb(251,37,11)" rx="2" ry="2" />
+<text  x="4020.07" y="159.5" >st..</text>
+</g>
+<g >
+<title>void std::__invoke_impl&lt;void, runHackathon(int const*)::{lambda()#3}&gt;(std::__invoke_other, runHackathon(int const*)::{lambda()#3}&amp;&amp;) (43 samples, 1.76%)</title><rect x="5253.2" y="213" width="105.3" height="15.0" fill="rgb(214,200,9)" rx="2" ry="2" />
+<text  x="5256.21" y="223.5" >void std::__..</text>
+</g>
+<g >
+<title>std::unique_lock&lt;std::recursive_mutex&gt;::lock() (5 samples, 0.20%)</title><rect x="3899.6" y="101" width="12.2" height="15.0" fill="rgb(217,88,13)" rx="2" ry="2" />
+<text  x="3902.57" y="111.5" ></text>
+</g>
+<g >
+<title>__dynamic_cast (59 samples, 2.42%)</title><rect x="5483.3" y="293" width="144.4" height="15.0" fill="rgb(220,214,35)" rx="2" ry="2" />
+<text  x="5486.30" y="303.5" >__dynamic_cast</text>
+</g>
+<g >
+<title>std::mutex::lock() (102 samples, 4.18%)</title><rect x="4315.7" y="117" width="249.7" height="15.0" fill="rgb(220,88,21)" rx="2" ry="2" />
+<text  x="4318.70" y="127.5" >std::mutex::lock()</text>
+</g>
+<g >
+<title>[libcrypto.so.1.1] (10 samples, 0.41%)</title><rect x="874.1" y="277" width="24.5" height="15.0" fill="rgb(248,131,41)" rx="2" ry="2" />
+<text  x="877.08" y="287.5" >[..</text>
+</g>
+<g >
+<title>std::unique_lock&lt;std::recursive_mutex&gt;::unlock() (10 samples, 0.41%)</title><rect x="3860.4" y="149" width="24.5" height="15.0" fill="rgb(221,130,8)" rx="2" ry="2" />
+<text  x="3863.41" y="159.5" >s..</text>
+</g>
+<g >
+<title>std::__shared_ptr_access&lt;std::mutex, (__gnu_cxx::_Lock_policy)2, false, false&gt;::operator*() const (5 samples, 0.20%)</title><rect x="3725.8" y="133" width="12.2" height="15.0" fill="rgb(247,190,36)" rx="2" ry="2" />
+<text  x="3728.78" y="143.5" ></text>
+</g>
+<g >
+<title>std::unique_lock&lt;std::recursive_mutex&gt;::unique_lock(std::recursive_mutex&amp;) (34 samples, 1.39%)</title><rect x="3777.2" y="149" width="83.2" height="15.0" fill="rgb(240,111,36)" rx="2" ry="2" />
+<text  x="3780.18" y="159.5" >std::uniq..</text>
+</g>
+<g >
+<title>std::basic_ostream&lt;char, std::char_traits&lt;char&gt; &gt;::operator&lt;&lt;(std::ios_base&amp; (*)(std::ios_base&amp;)) (26 samples, 1.06%)</title><rect x="4785.7" y="133" width="63.6" height="15.0" fill="rgb(229,168,34)" rx="2" ry="2" />
+<text  x="4788.68" y="143.5" >std::b..</text>
+</g>
+<g >
+<title>bool std::has_facet&lt;std::ctype&lt;char&gt; &gt;(std::locale const&amp;) (37 samples, 1.51%)</title><rect x="271.9" y="261" width="90.6" height="15.0" fill="rgb(245,149,24)" rx="2" ry="2" />
+<text  x="274.92" y="271.5" >bool std::..</text>
+</g>
+<g >
+<title>std::operator&amp;=(std::_Ios_Fmtflags&amp;, std::_Ios_Fmtflags) (5 samples, 0.20%)</title><rect x="4812.6" y="85" width="12.2" height="15.0" fill="rgb(209,174,45)" rx="2" ry="2" />
+<text  x="4815.60" y="95.5" ></text>
+</g>
+<g >
+<title>std::ctype&lt;char&gt; const&amp; std::use_facet&lt;std::ctype&lt;char&gt; &gt;(std::locale const&amp;) (38 samples, 1.56%)</title><rect x="609.7" y="261" width="93.0" height="15.0" fill="rgb(209,32,37)" rx="2" ry="2" />
+<text  x="612.71" y="271.5" >std::ctype&lt;..</text>
+</g>
+<g >
+<title>__pthread_mutex_lock (9 samples, 0.37%)</title><rect x="3838.4" y="85" width="22.0" height="15.0" fill="rgb(226,88,25)" rx="2" ry="2" />
+<text  x="3841.37" y="95.5" >_..</text>
+</g>
+<g >
+<title>std::unique_lock&lt;std::mutex&gt;::unique_lock(std::mutex&amp;) (6 samples, 0.25%)</title><rect x="3916.7" y="117" width="14.7" height="15.0" fill="rgb(209,229,53)" rx="2" ry="2" />
+<text  x="3919.70" y="127.5" ></text>
+</g>
+<g >
+<title>[libstdc++.so.6.0.25] (67 samples, 2.74%)</title><rect x="2093.1" y="261" width="164.0" height="15.0" fill="rgb(220,118,27)" rx="2" ry="2" />
+<text  x="2096.09" y="271.5" >[libstdc++.so.6.0.25]</text>
+</g>
+<g >
+<title>runHackathon(int const*)::{lambda()#1}::operator()() const (289 samples, 11.83%)</title><rect x="3556.9" y="197" width="707.4" height="15.0" fill="rgb(213,214,36)" rx="2" ry="2" />
+<text  x="3559.88" y="207.5" >runHackathon(int const*)::{lambda()#1}::operator()() const</text>
+</g>
+<g >
+<title>std::unique_lock&lt;std::recursive_mutex&gt;::unique_lock(std::recursive_mutex&amp;) (5 samples, 0.20%)</title><rect x="5255.7" y="149" width="12.2" height="15.0" fill="rgb(235,218,25)" rx="2" ry="2" />
+<text  x="5258.66" y="159.5" ></text>
+</g>
+<g >
+<title>std::ostreambuf_iterator&lt;char, std::char_traits&lt;char&gt; &gt; std::num_put&lt;char, std::ostreambuf_iterator&lt;char, std::char_traits&lt;char&gt; &gt; &gt;::_M_insert_int&lt;long&gt;(std::ostreambuf_iterator&lt;char, std::char_traits&lt;char&gt; &gt;, std::ios_base&amp;, char, long) const (20 samples, 0.82%)</title><rect x="1828.7" y="229" width="49.0" height="15.0" fill="rgb(206,150,46)" rx="2" ry="2" />
+<text  x="1831.72" y="239.5" >std:..</text>
+</g>
+<g >
+<title>void std::_V2::condition_variable_any::wait&lt;std::unique_lock&lt;std::recursive_mutex&gt;, EventQueue::dequeueEvent()::{lambda()#1}&gt;(std::unique_lock&lt;std::recursive_mutex&gt;&amp;, EventQueue::dequeueEvent()::{lambda()#1}) (19 samples, 0.78%)</title><rect x="3887.3" y="149" width="46.5" height="15.0" fill="rgb(248,194,47)" rx="2" ry="2" />
+<text  x="3890.33" y="159.5" >void..</text>
+</g>
+<g >
+<title>std::recursive_mutex::lock() (5 samples, 0.20%)</title><rect x="3899.6" y="85" width="12.2" height="15.0" fill="rgb(215,90,18)" rx="2" ry="2" />
+<text  x="3902.57" y="95.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (8 samples, 0.33%)</title><rect x="915.7" y="261" width="19.6" height="15.0" fill="rgb(233,40,44)" rx="2" ry="2" />
+<text  x="918.69" y="271.5" ></text>
+</g>
+<g >
+<title>IdeaGenerator::getNextIdea(Container&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, Container&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, int) (37 samples, 1.51%)</title><rect x="5267.9" y="165" width="90.6" height="15.0" fill="rgb(209,85,40)" rx="2" ry="2" />
+<text  x="5270.90" y="175.5" >IdeaGenera..</text>
+</g>
+<g >
+<title>Student::getPackagesChecksum[abi:cxx11]() (55 samples, 2.25%)</title><rect x="4127.2" y="149" width="134.6" height="15.0" fill="rgb(226,75,28)" rx="2" ry="2" />
+<text  x="4130.22" y="159.5" >Student::getPacka..</text>
+</g>
+<g >
+<title>Container&lt;Event&gt;::pushFront(Event) (8 samples, 0.33%)</title><rect x="3943.6" y="149" width="19.6" height="15.0" fill="rgb(207,38,13)" rx="2" ry="2" />
+<text  x="3946.63" y="159.5" ></text>
+</g>
+<g >
+<title>__strcmp_sse2_unaligned (24 samples, 0.98%)</title><rect x="1128.6" y="277" width="58.8" height="15.0" fill="rgb(213,178,54)" rx="2" ry="2" />
+<text  x="1131.65" y="287.5" >__strc..</text>
+</g>
+<g >
+<title>std::basic_ostream&lt;char, std::char_traits&lt;char&gt; &gt;::operator&lt;&lt;(std::ios_base&amp; (*)(std::ios_base&amp;)) (15 samples, 0.61%)</title><rect x="5174.9" y="149" width="36.7" height="15.0" fill="rgb(233,149,48)" rx="2" ry="2" />
+<text  x="5177.88" y="159.5" >std..</text>
+</g>
+<g >
+<title>Event::~Event() (7 samples, 0.29%)</title><rect x="3667.0" y="117" width="17.2" height="15.0" fill="rgb(217,37,43)" rx="2" ry="2" />
+<text  x="3670.03" y="127.5" ></text>
+</g>
+<g >
+<title>Container&lt;Package*&gt;::operator[](int) (7 samples, 0.29%)</title><rect x="3576.5" y="165" width="17.1" height="15.0" fill="rgb(236,89,4)" rx="2" ry="2" />
+<text  x="3579.46" y="175.5" ></text>
+</g>
+<g >
+<title>__clone (5 samples, 0.20%)</title><rect x="39.4" y="229" width="12.2" height="15.0" fill="rgb(254,148,36)" rx="2" ry="2" />
+<text  x="42.37" y="239.5" ></text>
+</g>
+<g >
+<title>IdeaGenerator::run() (43 samples, 1.76%)</title><rect x="5253.2" y="181" width="105.3" height="15.0" fill="rgb(223,192,29)" rx="2" ry="2" />
+<text  x="5256.21" y="191.5" >IdeaGenerato..</text>
+</g>
+<g >
+<title>std::num_get&lt;char, std::istreambuf_iterator&lt;char, std::char_traits&lt;char&gt; &gt; &gt; const&amp; std::use_facet&lt;std::num_get&lt;char, std::istreambuf_iterator&lt;char, std::char_traits&lt;char&gt; &gt; &gt; &gt;(std::locale const&amp;) (26 samples, 1.06%)</title><rect x="732.1" y="261" width="63.6" height="15.0" fill="rgb(254,71,26)" rx="2" ry="2" />
+<text  x="735.10" y="271.5" >std::n..</text>
+</g>
+<g >
+<title>__lll_lock_wait (5 samples, 0.20%)</title><rect x="5094.1" y="101" width="12.2" height="15.0" fill="rgb(222,79,45)" rx="2" ry="2" />
+<text  x="5097.10" y="111.5" ></text>
+</g>
+<g >
+<title>std::lock_guard&lt;std::mutex&gt;::~lock_guard() (6 samples, 0.25%)</title><rect x="4034.2" y="133" width="14.7" height="15.0" fill="rgb(228,167,44)" rx="2" ry="2" />
+<text  x="4037.20" y="143.5" ></text>
+</g>
+<g >
+<title>std::locale::~locale() (93 samples, 3.81%)</title><rect x="2783.4" y="261" width="227.6" height="15.0" fill="rgb(254,152,43)" rx="2" ry="2" />
+<text  x="2786.37" y="271.5" >std::locale::~locale()</text>
+</g>
+<g >
+<title>std::__invoke_result&lt;runHackathon(int const*)::{lambda()#2}&gt;::type std::__invoke&lt;runHackathon(int const*)::{lambda()#2}&gt;(std::__invoke_result&amp;&amp;, (runHackathon(int const*)::{lambda()#2}&amp;&amp;)...) (404 samples, 16.54%)</title><rect x="4264.3" y="229" width="988.9" height="15.0" fill="rgb(216,198,33)" rx="2" ry="2" />
+<text  x="4267.29" y="239.5" >std::__invoke_result&lt;runHackathon(int const*)::{lambda()#2}&gt;::type std::__invoke&lt;runHackathon(int const*)::{lambda()#2}&gt;(std::__invoke_re..</text>
+</g>
+<g >
+<title>runHackathon(int const*)::{lambda()#3}::operator()() const (43 samples, 1.76%)</title><rect x="5253.2" y="197" width="105.3" height="15.0" fill="rgb(254,81,16)" rx="2" ry="2" />
+<text  x="5256.21" y="207.5" >runHackathon..</text>
+</g>
+<g >
+<title>Event::~Event() (8 samples, 0.33%)</title><rect x="3995.0" y="149" width="19.6" height="15.0" fill="rgb(247,87,52)" rx="2" ry="2" />
+<text  x="3998.03" y="159.5" ></text>
+</g>
+<g >
+<title>__gthread_recursive_mutex_lock(pthread_mutex_t*) (30 samples, 1.23%)</title><rect x="3787.0" y="101" width="73.4" height="15.0" fill="rgb(245,197,12)" rx="2" ry="2" />
+<text  x="3789.97" y="111.5" >__gthrea..</text>
+</g>
+<g >
+<title>std::ios_base::ios_base() (9 samples, 0.37%)</title><rect x="1439.5" y="245" width="22.1" height="15.0" fill="rgb(228,90,24)" rx="2" ry="2" />
+<text  x="1442.52" y="255.5" >s..</text>
+</g>
+<g >
+<title>std::num_put&lt;char, std::ostreambuf_iterator&lt;char, std::char_traits&lt;char&gt; &gt; &gt; const&amp; std::use_facet&lt;std::num_put&lt;char, std::ostreambuf_iterator&lt;char, std::char_traits&lt;char&gt; &gt; &gt; &gt;(std::locale const&amp;) (24 samples, 0.98%)</title><rect x="795.7" y="261" width="58.8" height="15.0" fill="rgb(240,160,31)" rx="2" ry="2" />
+<text  x="798.75" y="271.5" >std::n..</text>
+</g>
+<g >
+<title>bool std::has_facet&lt;std::num_put&lt;char, std::ostreambuf_iterator&lt;char, std::char_traits&lt;char&gt; &gt; &gt; &gt;(std::locale const&amp;)@plt (5 samples, 0.20%)</title><rect x="506.9" y="261" width="12.2" height="15.0" fill="rgb(242,124,45)" rx="2" ry="2" />
+<text  x="509.91" y="271.5" ></text>
+</g>
+<g >
+<title>__pthread_mutex_lock (5 samples, 0.20%)</title><rect x="4085.6" y="85" width="12.2" height="15.0" fill="rgb(216,67,33)" rx="2" ry="2" />
+<text  x="4088.60" y="95.5" ></text>
+</g>
+<g >
+<title>[libstdc++.so.6.0.25] (6 samples, 0.25%)</title><rect x="898.6" y="277" width="14.6" height="15.0" fill="rgb(246,221,48)" rx="2" ry="2" />
+<text  x="901.56" y="287.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (83 samples, 3.40%)</title><rect x="4357.3" y="85" width="203.2" height="15.0" fill="rgb(223,133,53)" rx="2" ry="2" />
+<text  x="4360.31" y="95.5" >[[kernel.kallsyms]]</text>
+</g>
+<g >
+<title>std::__shared_ptr_access&lt;std::mutex, (__gnu_cxx::_Lock_policy)2, false, false&gt;::_M_get() const (5 samples, 0.20%)</title><rect x="3725.8" y="117" width="12.2" height="15.0" fill="rgb(220,1,49)" rx="2" ry="2" />
+<text  x="3728.78" y="127.5" ></text>
+</g>
+<g >
+<title>std::recursive_mutex::lock() (5 samples, 0.20%)</title><rect x="5255.7" y="117" width="12.2" height="15.0" fill="rgb(245,228,24)" rx="2" ry="2" />
+<text  x="5258.66" y="127.5" ></text>
+</g>
+<g >
+<title>__lll_lock_wait (20 samples, 0.82%)</title><rect x="3789.4" y="85" width="49.0" height="15.0" fill="rgb(244,2,47)" rx="2" ry="2" />
+<text  x="3792.42" y="95.5" >__ll..</text>
+</g>
+<g >
+<title>sha256(std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;) (36 samples, 1.47%)</title><rect x="5140.6" y="165" width="88.1" height="15.0" fill="rgb(233,139,38)" rx="2" ry="2" />
+<text  x="5143.61" y="175.5" >sha256(std..</text>
+</g>
+<g >
+<title>std::unique_lock&lt;std::recursive_mutex&gt;::unlock() (5 samples, 0.20%)</title><rect x="4097.8" y="149" width="12.3" height="15.0" fill="rgb(219,81,54)" rx="2" ry="2" />
+<text  x="4100.84" y="159.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (386 samples, 15.80%)</title><rect x="2078.4" y="277" width="944.9" height="15.0" fill="rgb(217,109,34)" rx="2" ry="2" />
+<text  x="2081.40" y="287.5" >[[kernel.kallsyms]]</text>
+</g>
+<g >
+<title>sha256(std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;) (6 samples, 0.25%)</title><rect x="4137.0" y="133" width="14.7" height="15.0" fill="rgb(222,81,17)" rx="2" ry="2" />
+<text  x="4140.01" y="143.5" ></text>
+</g>
+<g >
+<title>std::unique_lock&lt;std::recursive_mutex&gt;::lock() (5 samples, 0.20%)</title><rect x="5116.1" y="133" width="12.3" height="15.0" fill="rgb(250,212,7)" rx="2" ry="2" />
+<text  x="5119.13" y="143.5" ></text>
+</g>
+<g >
+<title>decltype (__invoke((_S_declval&lt;0ul&gt;)())) std::thread::_Invoker&lt;std::tuple&lt;runHackathon(int const*)::{lambda()#1}&gt; &gt;::_M_invoke&lt;0ul&gt;(std::_Index_tuple&lt;0ul&gt;) (289 samples, 11.83%)</title><rect x="3556.9" y="245" width="707.4" height="15.0" fill="rgb(252,71,38)" rx="2" ry="2" />
+<text  x="3559.88" y="255.5" >decltype (__invoke((_S_declval&lt;0ul&gt;)())) std::thread::_Invoker&lt;std::tuple&lt;runHackathon(int const*..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (353 samples, 14.45%)</title><rect x="10.0" y="277" width="864.1" height="15.0" fill="rgb(223,15,8)" rx="2" ry="2" />
+<text  x="13.00" y="287.5" >[[kernel.kallsyms]]</text>
+</g>
+<g >
+<title>std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;::_M_replace(unsigned long, unsigned long, char const*, unsigned long) (10 samples, 0.41%)</title><rect x="5887.2" y="293" width="24.5" height="15.0" fill="rgb(251,39,11)" rx="2" ry="2" />
+<text  x="5890.19" y="303.5" >s..</text>
+</g>
+<g >
+<title>ChecksumTracker&lt;PackageDownloader, (ChecksumType)1&gt;::updateGlobalChecksum(std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;) (331 samples, 13.55%)</title><rect x="4269.2" y="165" width="810.2" height="15.0" fill="rgb(210,229,41)" rx="2" ry="2" />
+<text  x="4272.19" y="175.5" >ChecksumTracker&lt;PackageDownloader, (ChecksumType)1&gt;::updateGlobalChecksum(std::__cxx11::basic_string&lt;char, std::..</text>
+</g>
+<g >
+<title>std::lock_guard&lt;std::mutex&gt;::lock_guard(std::mutex&amp;) (7 samples, 0.29%)</title><rect x="5094.1" y="133" width="17.1" height="15.0" fill="rgb(210,58,24)" rx="2" ry="2" />
+<text  x="5097.10" y="143.5" ></text>
+</g>
+</g>
+</svg>
